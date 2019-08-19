@@ -1,0 +1,348 @@
+#!/usr/bin/env sh
+#
+#flutter 构建脚本，用来保证所有开发者的flutter sdk的版本一致性问题
+#create by wyh
+#
+#how to use: flutter xxx 替换为 ./flutterw xxx
+#
+#某些资源下载不了的时候加个梯子
+#export http_proxy=http://127.0.0.1:1087
+#export https_proxy=http://127.0.0.1:1087
+
+MainProjectPath=$(dirname $(dirname "$PWD")) 
+
+FlutterProjectConfigPath="project.properties"
+FlutterPath="${HOME}/flutter"
+
+NativeFlutterVersion=""
+NativeFlutterChannel=""
+
+ProjectName="${PWD##*/}"
+
+iOSProductPath="${MainProjectPath}/FlutterProduct"
+
+flutterw() {
+  "${FlutterPath}/bin/flutter" "$@"
+  return $?
+}
+
+isInstalledFlutter() {
+    flutterInfo="$(flutterw --version)"
+    if [ ! $? -eq 0 ]; then
+        return 0
+    fi
+
+    return 1
+}
+
+installFlutter() {
+    git clone -b master https://github.com/flutter/flutter.git "${FlutterPath}" 
+}
+
+isExistProjectConfig() {
+    if [[ ! -e "${FlutterProjectConfigPath}" ]]; then
+        return 0
+    fi
+
+    return 1
+}
+
+createProjectConfig() {
+    echo "FlutterEnable=true" >> ${FlutterProjectConfigPath}
+
+    echo "FlutterVersion=${NativeFlutterVersion}" >> ${FlutterProjectConfigPath}
+    echo "FlutterChannel=${NativeFlutterChannel}" >> ${FlutterProjectConfigPath}
+    
+    echo "ProjectName=${ProjectName}"       >> ${FlutterProjectConfigPath}
+
+    echo "AppVersion=1.0.0"                 >> ${FlutterProjectConfigPath}
+    echo "AppBuildVersion=1"                >> ${FlutterProjectConfigPath}
+    echo "AppID=com.flutter.${ProjectName}" >> ${FlutterProjectConfigPath}
+    echo "AppName=${ProjectName}"           >> ${FlutterProjectConfigPath}
+}
+
+getFlutterInfo() {
+    local version="$(cut -d'•' -f1 <<< $1)"
+    NativeFlutterVersion="$(cut -d' ' -f2 <<< ${version})"
+    local channel="$(cut -d'•' -f2 <<< $1)"
+    NativeFlutterChannel="$(cut -d' ' -f2 <<< ${channel})"
+    echo "native flutter version: $NativeFlutterVersion"
+    echo "native flutter channel: $NativeFlutterChannel"
+}
+
+checkFlutterChannelIsCorrect() {
+    while IFS='=' read -r key value
+    do
+        key=$(echo $key | tr '.' '_')
+        eval ${key}=\${value}
+    done < "$FlutterProjectConfigPath"
+    if [[ -z $FlutterChannel ]]; then
+        echo "Error:FlutterProjectConfig is inCorrect!"
+        exit 1
+    fi
+    
+    if [ $NativeFlutterChannel == $FlutterChannel ]; then
+        return 1
+    fi
+
+    return 0
+}
+
+checkFlutterVersionIsCorrect() {
+    while IFS='=' read -r key value
+    do
+        key=$(echo $key | tr '.' '_')
+        eval ${key}=\${value}
+    done < "$FlutterProjectConfigPath"
+    if [[ -z $FlutterVersion ]]; then
+        echo "Error:FlutterProjectConfig is inCorrect!"
+        exit 1
+    fi
+    
+    if [ $NativeFlutterVersion == $FlutterVersion ]; then
+        return 1
+    fi
+
+    return 0
+}
+
+updateFlutterConfig() {
+    sed -i "" "s/FlutterVersion=.*/FlutterVersion=${NativeFlutterVersion}/g" $FlutterProjectConfigPath
+    sed -i "" "s/FlutterChannel=.*/FlutterChannel=${NativeFlutterChannel}/g" $FlutterProjectConfigPath
+}
+
+# update Flutter Framework
+updateiOSFlutter() {
+    local path=".ios/Flutter/engine"
+    local toPath="$iOSProductPath/Flutter"
+
+    if [ ! -e $iOSProductPath ]; then
+        mkdir -p $iOSProductPath
+    fi
+
+    if [ -e $toPath ]; then
+        rm -rf $toPath
+    fi
+
+    cp -rf $path $toPath
+}
+
+# update Flutter App
+updateiOSFlutterApp() {
+    local appPath=".ios/Flutter/App.framework"
+
+    local rootPath="$iOSProductPath/$ProjectName"
+    local podspecPath="$rootPath/$ProjectName.podspec"
+    local releaseAppPath="$rootPath/AppRelease.framework"
+    local debugAppPath="$rootPath/App.framework"
+
+    if [ ! -e $rootPath ]; then
+        mkdir -p $rootPath
+    fi
+
+    if [ ! -e $podspecPath ]; then
+        pod spec create $ProjectName
+        mv -f "$ProjectName.podspec" $podspecPath
+
+        sed -i "" "s/spec.license.*/spec.license      = { :type => \"MIT\" }/g" $podspecPath
+        sed -i "" "s/spec.homepage.*/spec.homepage     = \"https:\/\/github.com\/${ProjectName}\"/g" $podspecPath
+        sed -i "" "s/spec.source.*/spec.source       = { :git => \"https:\/\/github.com\/${ProjectName}\/${ProjectName}.git\", :tag => \"#{spec.version}\" }/g" $podspecPath
+        sed -i "" "s/spec.summary.*/spec.summary      = \"${ProjectName} summary.\"/g" $podspecPath
+        sed -i "" '/spec.description/a\
+    '${ProjectName}' description
+    ' $podspecPath
+        sed -i "" '/spec.public_header_files/a\
+    spec.vendored_frameworks = \"App.framework\"
+    ' $podspecPath
+    fi
+
+    if [ "$1" == "release" ]; then
+        cp -rf $appPath $releaseAppPath
+    elif [ "$1" == "debug" ]; then
+        rm -rf $debugAppPath #cp 覆盖不了framework，很奇怪
+        cp -rf $appPath $debugAppPath
+    else
+        local releaseAppExecutePath="${releaseAppPath}/App"
+        local debugAppExecutePath="${debugAppPath}/App"
+
+        lipo -create $debugAppExecutePath $releaseAppExecutePath -output $debugAppExecutePath
+        
+        rm -rf $releaseAppPath
+    fi
+
+}
+
+updateiOSFlutterPluginRegistrant() {
+    local name="FlutterPluginRegistrant"
+    local headerPath=".ios/Flutter/$name/Classes/GeneratedPluginRegistrant.h"
+    local aReleasePath="build/ios/Release-iphoneos/$name/lib$name.a"
+    local aDebugPath="build/ios/Debug-iphonesimulator/$name/lib$name.a"
+
+    local productPath="$iOSProductPath/$name"
+    local productHeaderPath="$productPath/GeneratedPluginRegistrant.h"
+    local productAPath="$productPath/lib$name.a"
+    local podSpecPath="$productPath/$name.podspec"
+
+    if [ ! -e $productPath ]; then
+        mkdir -p $productPath
+    fi
+
+    if [ ! -e $podSpecPath ]; then
+        pod spec create $name
+        mv -f "$name.podspec" $podSpecPath
+        sed -i "" "s/spec.license.*/spec.license      = { :type => \"MIT\" }/g" $podSpecPath
+        sed -i "" "s/spec.homepage.*/spec.homepage     = \"https:\/\/github.com\/$name\"/g" $podSpecPath
+        sed -i "" "s/spec.source.*/spec.source       = { :git => \"https:\/\/github.com\/$name\/$name.git\", :tag => \"#{spec.version}\" }/g" $podSpecPath
+        sed -i "" "s/spec.summary.*/spec.summary      = \"$name summary.\"/g" $podSpecPath
+        sed -i "" '/spec.description/a\
+    '$name' description
+    ' $podSpecPath
+        sed -i "" "s/# spec.public_header_files.*/spec.public_header_files = \"*.h\"/g" $podSpecPath
+        sed -i '' '/spec.public_header_files/a\
+    spec.vendored_libraries = \"*.a\"
+  ' $podSpecPath
+        sed -i '' '/spec.public_header_files/a\
+    spec.source_files = \"*.h\"
+  ' $podSpecPath
+    fi
+
+    cp -rf $headerPath $productHeaderPath
+
+    lipo -create $aReleasePath $aDebugPath -output $productAPath
+}
+
+updateiOSFlutterPlugin() {
+    local buildPath="build/ios"
+    local releaseBuildPath="$buildPath/Release-iphoneos"
+    local debugBuildPath="$buildPath/Debug-iphonesimulator"
+    local pluginsName="${ProjectName}_plugins"
+    local productPluginsPath="$iOSProductPath/$pluginsName"
+    local podSpecPath="$productPluginsPath/$pluginsName.podspec"
+
+    if [ ! -e $productPluginsPath ]; then
+        mkdir -p $productPluginsPath
+    fi
+
+    if [ ! -e $podSpecPath ]; then
+        pod spec create $pluginsName
+        mv -f "$pluginsName.podspec" $podSpecPath
+        sed -i "" "s/spec.license.*/spec.license      = { :type => \"MIT\" }/g" $podSpecPath
+        sed -i "" "s/spec.homepage.*/spec.homepage     = \"https:\/\/github.com\/${pluginsName}\"/g" $podSpecPath
+        sed -i "" "s/spec.source.*/spec.source       = { :git => \"https:\/\/github.com\/${pluginsName}\/${pluginsName}.git\", :tag => \"#{spec.version}\" }/g" $podSpecPath
+        sed -i "" "s/spec.summary.*/spec.summary      = \"${pluginsName} summary.\"/g" $podSpecPath
+        sed -i "" '/spec.description/a\
+    '${pluginsName}' description
+    ' $podSpecPath
+        sed -i '' '/spec.public_header_files/a\
+    spec.vendored_libraries = \"*.a\"
+  ' $podSpecPath
+    fi
+
+    local releasePathStr=$(find $releaseBuildPath -name "*.a")
+    local releasePaths=(${releasePathStr// /})
+    local debugPathStr=$(find $debugBuildPath -name "*.a")
+    local debugPaths=(${debugPathStr// /})
+
+    for releasePath in ${releasePaths[@]}
+    do
+        local releasePluginName="${releasePath##*/}"
+        if [[ $releasePluginName != "libPods-Runner.a" && $releasePluginName != "libFlutterPluginRegistrant.a" ]]; then
+
+            for debugPath in ${debugPaths[@]}
+            do
+                local debugPluginName="${debugPath##*/}"
+                if [ $releasePluginName == $debugPluginName ]; then
+                    local productPluginPath="${productPluginsPath}/${releasePluginName}"
+                    lipo -create $releasePath $debugPath -output $productPluginPath
+                    break
+                fi
+            done
+
+        fi
+    done
+}
+
+buildiOSModule() {
+    # flutterw clean
+    # flutterw packages get
+
+    flutterw build ios --release --no-codesign
+
+    updateiOSFlutter
+
+    updateiOSFlutterApp release
+
+    flutterw build ios --debug --simulator
+
+    updateiOSFlutterApp debug
+
+    updateiOSFlutterApp merge
+
+    updateiOSFlutterPluginRegistrant
+
+    updateiOSFlutterPlugin
+}
+
+
+
+#0 install flutter
+isInstalledFlutter
+if [ $? -eq 0 ]; then
+    echo "install flutter"
+    installFlutter
+fi
+
+#get native flutter info
+getFlutterInfo "${flutterInfo}"
+
+#1 create ProjectConfig
+isExistProjectConfig
+if [ $? -eq 0 ]; then
+    echo "create ProjectConfig"
+    createProjectConfig
+fi
+
+#option 1 update project config
+if [ "$*" == "update config" ]; then
+    echo "update config"
+    updateFlutterConfig
+    exit 1
+fi
+
+#2 checkFlutterChannelIsCorrect
+checkFlutterChannelIsCorrect
+if [ $? -eq 0 ]; then
+    echo "switch project channel"
+    flutterw channel $FlutterChannel
+    if [ $? -eq 0 ]; then
+        echo "Error:switch project channel fail!"
+    fi
+
+    flutterw --version
+fi
+
+#3 checkFlutterVersionIsCorrect
+checkFlutterVersionIsCorrect
+if [ $? -eq 0 ]; then
+    echo "switch project version"
+    flutterw version $FlutterVersion
+fi
+
+if [ "$*" == "build module ios" ]; then
+    echo "begin build module ios"
+    buildiOSModule
+
+elif [ "$*" == "build module android" ]; then
+    echo "begin build module android"
+
+elif [ "$*" == "enable false" ]; then
+    sed -i "" "s/FlutterEnable=.*/FlutterEnable=false/g" $FlutterProjectConfigPath
+
+elif [ "$*" == "enable true" ]; then
+    sed -i "" "s/FlutterEnable=.*/FlutterEnable=true/g" $FlutterProjectConfigPath
+
+else
+
+flutterw "$@"
+
+fi
