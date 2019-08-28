@@ -145,6 +145,10 @@ fi
 
 ```shell
 ./flutter enable true		#打开flutter开发模式
-./flutter enable false	#关闭flutter开发模式
+./flutter enable false	    #关闭flutter开发模式
 ```
+
+
+
+10.切换开发模式后在iOS项目中需要执行`pod install`
 
