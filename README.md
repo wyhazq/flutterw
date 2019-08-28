@@ -48,7 +48,7 @@ flutter create -t module $YourFlutterProjectName #名字就是在git上创建的
 
 ```shell
 chmod +x ./flutterw
-./flutter
+./flutterw
 ```
 
 
@@ -144,8 +144,8 @@ fi
 9.flutter开发模式开关
 
 ```shell
-./flutter enable true		#打开flutter开发模式
-./flutter enable false	    #关闭flutter开发模式
+./flutterw enable true		#打开flutter开发模式
+./flutterw enable false	    #关闭flutter开发模式
 ```
 
 
